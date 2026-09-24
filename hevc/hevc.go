@@ -1,8 +1,9 @@
 package hevc
 
 import (
-	"encoding/binary"
 	"fmt"
+
+	"github.com/Eyevinn/mp4ff/internal/naluscan"
 )
 
 // NaluType - HEVC nal type according to ISO/IEC 23008-2 Table 7.1
@@ -118,83 +119,45 @@ func ParseNaluHeader(naluHeader []byte) NaluInfo {
 }
 
 // SplitNalusByLayerID splits length-prefixed NALUs in a sample by nuh_layer_id.
-// The lengthSize is typically 4 bytes.
+// The lengthSize is the length field size in bytes, as returned by DecConfRec.LengthSize().
 func SplitNalusByLayerID(sample []byte, lengthSize int) map[byte][][]byte {
 	result := make(map[byte][][]byte)
-	pos := 0
-	for pos+lengthSize <= len(sample) {
-		var naluLength uint32
-		switch lengthSize {
-		case 4:
-			naluLength = binary.BigEndian.Uint32(sample[pos : pos+4])
-		case 2:
-			naluLength = uint32(binary.BigEndian.Uint16(sample[pos : pos+2]))
-		case 1:
-			naluLength = uint32(sample[pos])
-		default:
-			return result
-		}
-		pos += lengthSize
-		if pos+int(naluLength) > len(sample) || naluLength < 2 {
-			break
-		}
-		layerID := GetNaluLayerID(sample[pos : pos+2])
-		result[layerID] = append(result[layerID], sample[pos:pos+int(naluLength)])
-		pos += int(naluLength)
-	}
+	_ = naluscan.Walk(sample, lengthSize, 2, func(nalu []byte) bool {
+		layerID := GetNaluLayerID(nalu)
+		result[layerID] = append(result[layerID], nalu)
+		return true
+	})
 	return result
-}
-
-// naluFits reports whether a nalu of naluLength bytes starting at pos fits
-// inside a sample of sampleLength bytes. The length fields come from the
-// sample itself, so they must be checked before use. The arithmetic is done in
-// uint64 so that a length field close to 2^32 cannot wrap.
-func naluFits(pos, naluLength uint32, sampleLength int) bool {
-	return naluLength > 0 && uint64(pos)+uint64(naluLength) <= uint64(sampleLength)
 }
 
 // FindNaluTypes - find list of nalu types in sample with 4-byte NALU lengths
 func FindNaluTypes(sample []byte) []NaluType {
+	return FindNaluTypesWithLengthSize(sample, 4)
+}
+
+// FindNaluTypesWithLengthSize - find list of nalu types in sample with lengthSize-byte NALU lengths
+func FindNaluTypesWithLengthSize(sample []byte, lengthSize int) []NaluType {
 	naluList := make([]NaluType, 0)
-	length := len(sample)
-	if length < 4 {
-		return naluList
-	}
-	var pos uint32 = 0
-	for pos+4 < uint32(length) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		if !naluFits(pos, naluLength, length) {
-			break // bad nalu length field: stop scanning
-		}
-		naluType := GetNaluType(sample[pos])
-		naluList = append(naluList, naluType)
-		pos += naluLength
-	}
+	_ = naluscan.Walk(sample, lengthSize, 1, func(nalu []byte) bool {
+		naluList = append(naluList, GetNaluType(nalu[0]))
+		return true
+	})
 	return naluList
 }
 
 // FindNaluTypesUpToFirstVideoNalu - all nalu types up to first video nalu in sample with 4-byte NALU lengths
 func FindNaluTypesUpToFirstVideoNalu(sample []byte) []NaluType {
+	return FindNaluTypesUpToFirstVideoNaluWithLengthSize(sample, 4)
+}
+
+// FindNaluTypesUpToFirstVideoNaluWithLengthSize - all nalu types up to first video nalu in sample with lengthSize-byte NALU lengths
+func FindNaluTypesUpToFirstVideoNaluWithLengthSize(sample []byte, lengthSize int) []NaluType {
 	naluList := make([]NaluType, 0)
-	length := len(sample)
-	if length < 4 {
-		return naluList
-	}
-	var pos uint32 = 0
-	for pos+4 < uint32(length) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		if !naluFits(pos, naluLength, length) {
-			break // bad nalu length field: stop scanning
-		}
-		naluType := GetNaluType(sample[pos])
+	_ = naluscan.Walk(sample, lengthSize, 1, func(nalu []byte) bool {
+		naluType := GetNaluType(nalu[0])
 		naluList = append(naluList, naluType)
-		pos += naluLength
-		if IsVideoNaluType(naluType) {
-			break // Video has started
-		}
-	}
+		return !IsVideoNaluType(naluType)
+	})
 	return naluList
 }
 
@@ -205,29 +168,27 @@ func IsVideoNaluType(naluType NaluType) bool {
 
 // ContainsNaluType - is specific NaluType present in sample with 4-byte NALU lengths
 func ContainsNaluType(sample []byte, specificNaluType NaluType) bool {
-	var pos uint32 = 0
-	length := len(sample)
-	if length < 4 {
-		return false
-	}
-	for pos+4 < uint32(length) {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		if !naluFits(pos, naluLength, length) {
-			break // bad nalu length field: stop scanning
-		}
-		naluType := GetNaluType(sample[pos])
-		if naluType == specificNaluType {
-			return true
-		}
-		pos += naluLength
-	}
-	return false
+	return ContainsNaluTypeWithLengthSize(sample, specificNaluType, 4)
+}
+
+// ContainsNaluTypeWithLengthSize - is specific NaluType present in sample with lengthSize-byte NALU lengths
+func ContainsNaluTypeWithLengthSize(sample []byte, specificNaluType NaluType, lengthSize int) bool {
+	found := false
+	_ = naluscan.Walk(sample, lengthSize, 1, func(nalu []byte) bool {
+		found = GetNaluType(nalu[0]) == specificNaluType
+		return !found
+	})
+	return found
 }
 
 // IsRAPSample - is Random Access picture (NALU 16-23) in sample with 4-byte NALU lengths
 func IsRAPSample(sample []byte) bool {
-	for _, naluType := range FindNaluTypes(sample) {
+	return IsRAPSampleWithLengthSize(sample, 4)
+}
+
+// IsRAPSampleWithLengthSize - is Random Access picture (NALU 16-23) in sample with lengthSize-byte NALU lengths
+func IsRAPSampleWithLengthSize(sample []byte, lengthSize int) bool {
+	for _, naluType := range FindNaluTypesWithLengthSize(sample, lengthSize) {
 		if 16 <= naluType && naluType <= 23 {
 			return true
 		}
@@ -237,7 +198,12 @@ func IsRAPSample(sample []byte) bool {
 
 // IsIDRSample - is IDR picture (NALU 19-20) in sample with 4-byte NALU lengths
 func IsIDRSample(sample []byte) bool {
-	for _, naluType := range FindNaluTypes(sample) {
+	return IsIDRSampleWithLengthSize(sample, 4)
+}
+
+// IsIDRSampleWithLengthSize - is IDR picture (NALU 19-20) in sample with lengthSize-byte NALU lengths
+func IsIDRSampleWithLengthSize(sample []byte, lengthSize int) bool {
+	for _, naluType := range FindNaluTypesWithLengthSize(sample, lengthSize) {
 		if 19 <= naluType && naluType <= 20 {
 			return true
 		}
@@ -247,7 +213,12 @@ func IsIDRSample(sample []byte) bool {
 
 // HasParameterSets - Check if HEVC VPS, SPS and PPS are present in sample with 4-byte NALU lengths
 func HasParameterSets(b []byte) bool {
-	naluTypeList := FindNaluTypesUpToFirstVideoNalu(b)
+	return HasParameterSetsWithLengthSize(b, 4)
+}
+
+// HasParameterSetsWithLengthSize - Check if HEVC VPS, SPS and PPS are present in sample with lengthSize-byte NALU lengths
+func HasParameterSetsWithLengthSize(b []byte, lengthSize int) bool {
+	naluTypeList := FindNaluTypesUpToFirstVideoNaluWithLengthSize(b, lengthSize)
 	var hasVPS, hasSPS, hasPPS bool
 	for _, naluType := range naluTypeList {
 		switch naluType {
@@ -267,26 +238,23 @@ func HasParameterSets(b []byte) bool {
 
 // GetParameterSets - get (multiple) VPS,  SPS, and PPS from a sample with 4-byte NALU lengths
 func GetParameterSets(sample []byte) (vps, sps, pps [][]byte) {
-	sampleLength := uint32(len(sample))
-	var pos uint32 = 0
-naluLoop:
-	for pos+4 < sampleLength {
-		naluLength := binary.BigEndian.Uint32(sample[pos : pos+4])
-		pos += 4
-		if !naluFits(pos, naluLength, len(sample)) {
-			break // bad nalu length field: stop scanning
-		}
-		switch naluType := GetNaluType(sample[pos]); {
+	return GetParameterSetsWithLengthSize(sample, 4)
+}
+
+// GetParameterSetsWithLengthSize - get (multiple) VPS,  SPS, and PPS from a sample with lengthSize-byte NALU lengths
+func GetParameterSetsWithLengthSize(sample []byte, lengthSize int) (vps, sps, pps [][]byte) {
+	_ = naluscan.Walk(sample, lengthSize, 1, func(nalu []byte) bool {
+		switch naluType := GetNaluType(nalu[0]); {
 		case naluType == NALU_VPS:
-			vps = append(vps, sample[pos:pos+naluLength])
+			vps = append(vps, nalu)
 		case naluType == NALU_SPS:
-			sps = append(sps, sample[pos:pos+naluLength])
+			sps = append(sps, nalu)
 		case naluType == NALU_PPS:
-			pps = append(pps, sample[pos:pos+naluLength])
+			pps = append(pps, nalu)
 		case naluType <= highestVideoNaluType:
-			break naluLoop
+			return false
 		}
-		pos += naluLength
-	}
+		return true
+	})
 	return vps, sps, pps
 }

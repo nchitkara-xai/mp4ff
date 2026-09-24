@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Eyevinn/mp4ff/avc"
 	"github.com/Eyevinn/mp4ff/mp4"
 )
 
@@ -90,99 +93,161 @@ func getExpected(t *testing.T, filename string) string {
 	return string(r)
 }
 
-// TestShortNaluLengths checks that parameter sets in an avcC with 2-byte NALU
-// lengths are listed, but that pslister refuses to look for them in samples
-// with such lengths, while still finding them in samples with 4-byte lengths.
+// TestShortNaluLengths checks that parameter sets are listed from the samples
+// of files with 1- and 2-byte NALU lengths as from the same files with 4-byte
+// lengths.
 func TestShortNaluLengths(t *testing.T) {
+	sps, _ := hex.DecodeString(avc_sps)
+	pps, _ := hex.DecodeString(avc_pps)
+	small := mp4.CreateEmptyInit()
+	if err := small.AddEmptyTrack(90000, "video", "und").SetAVCDescriptor("avc3", [][]byte{sps}, [][]byte{pps}, false); err != nil {
+		t.Fatal(err)
+	}
+	smallSamples := []mp4.FullSample{{Sample: mp4.Sample{Flags: mp4.SyncSampleFlags, Dur: 3000},
+		Data: frame(t, 4, [][]byte{sps, pps, {0x65, 0x88, 0x84}})}}
+
 	cases := []struct {
-		desc           string
-		inFile         string
-		naluLengthSize byte
-		stripPS        bool
-		goldenOut      string
-		wantOut        string
-		wantErr        string
+		desc       string
+		inFiles    []string
+		lengthSize int
 	}{
-		{desc: "PS in avcC", inFile: "../../mp4/testdata/init.mp4", naluLengthSize: 2,
-			goldenOut: "testdata/golden_h264mp4.txt"},
-		{desc: "progressive, PS in 4-byte samples", inFile: "../../mp4/testdata/prog_8s.mp4", stripPS: true,
-			wantOut: "SPS 1 len 25B: 6764001e"},
-		{desc: "progressive, PS in 2-byte samples", inFile: "../../mp4/testdata/prog_8s.mp4", naluLengthSize: 2, stripPS: true,
-			wantErr: "2-byte NALU lengths not supported"},
-		{desc: "fragmented, PS in 2-byte samples", inFile: "../../mp4/testdata/prog_8s_dec_dashinit.mp4", naluLengthSize: 2,
-			stripPS: true, wantErr: "2-byte NALU lengths not supported"},
+		{desc: "avc3", inFiles: []string{"../../mp4/testdata/init.mp4", "../../mp4/testdata/1.m4s"}, lengthSize: 2},
+		{desc: "hev1", inFiles: []string{"../../mp4/testdata/hvc1_init.mp4", "../../mp4/testdata/hvc1_seg_1.m4s"}, lengthSize: 2},
+		{desc: "avc3 small sample", lengthSize: 1},
 	}
 	for _, c := range cases {
 		t.Run(c.desc, func(t *testing.T) {
-			ifh, err := os.Open(c.inFile)
-			if err != nil {
-				t.Fatal(err)
+			init, samples := small, smallSamples
+			if c.inFiles != nil {
+				init, samples = readSamples(t, c.inFiles...)
+				moveParameterSets(t, init, samples)
 			}
-			f, err := mp4.DecodeFile(ifh)
-			ifh.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-			moov := f.Moov
-			if moov == nil {
-				moov = f.Init.Moov
-			}
-			moovSize := moov.Size()
-			var avcC *mp4.AvcCBox
-			for _, trak := range moov.Traks {
-				if trak.Mdia.Hdlr.HandlerType == "vide" {
-					avcC = trak.Mdia.Minf.Stbl.Stsd.AvcX.AvcC
-				}
-			}
-			avcC.NaluLengthSize = c.naluLengthSize
-			if c.stripPS {
-				avcC.SPSnalus, avcC.PPSnalus = nil, nil
-			}
-			if !f.IsFragmented() {
-				// The mdat follows the moov, so its chunks move with the moov size
-				shrink := moovSize - moov.Size()
-				for _, trak := range moov.Traks {
-					stbl := trak.Mdia.Minf.Stbl
-					if stbl.Stco != nil {
-						for i := range stbl.Stco.ChunkOffset {
-							stbl.Stco.ChunkOffset[i] -= uint32(shrink)
-						}
+			want4Frag, want4Prog := build(t, init, samples, 4)
+			gotFrag, gotProg := build(t, init, samples, c.lengthSize)
+			for i, files := range [][2]string{{want4Frag, gotFrag}, {want4Prog, gotProg}} {
+				var outs [2]string
+				for j, file := range files {
+					out := bytes.Buffer{}
+					if err := run([]string{appName, "-i", file}, &out); err != nil {
+						t.Fatal(err)
 					}
-					if stbl.Co64 != nil {
-						for i := range stbl.Co64.ChunkOffset {
-							stbl.Co64.ChunkOffset[i] -= shrink
-						}
-					}
+					outs[j] = out.String()
 				}
-			}
-			outFile := filepath.Join(t.TempDir(), "short_lengths.mp4")
-			ofh, err := os.Create(outFile)
-			if err != nil {
-				t.Fatal(err)
-			}
-			err = f.Encode(ofh)
-			ofh.Close()
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			gotOut := bytes.Buffer{}
-			err = run([]string{appName, "-i", outFile}, &gotOut)
-			if c.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
-					t.Errorf("got error %v, want %s", err, c.wantErr)
+				if !strings.Contains(outs[0], "SPS 1 len") || outs[1] != outs[0] {
+					t.Errorf("file %d: got\n%s\nwant\n%s", i, outs[1], outs[0])
 				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %s", err)
-			}
-			if c.goldenOut != "" && gotOut.String() != getExpected(t, c.goldenOut) {
-				t.Errorf("got %s", gotOut.String())
-			}
-			if !strings.Contains(gotOut.String(), c.wantOut) {
-				t.Errorf("got %s, want it to contain %s", gotOut.String(), c.wantOut)
 			}
 		})
 	}
+}
+
+// moveParameterSets moves the parameter sets of the decoder configuration into
+// the first sample, as in avc3 and hev1 files.
+func moveParameterSets(t *testing.T, init *mp4.InitSegment, samples []mp4.FullSample) {
+	stsd := init.Moov.Trak.Mdia.Minf.Stbl.Stsd
+	var ps [][]byte
+	if se := stsd.AvcX; se != nil {
+		ps = append(se.AvcC.SPSnalus, se.AvcC.PPSnalus...)
+		se.AvcC.SPSnalus, se.AvcC.PPSnalus = nil, nil
+		se.SetType("avc3")
+	} else {
+		se := stsd.HvcX
+		for _, array := range se.HvcC.NaluArrays {
+			ps = append(ps, array.Nalus...)
+		}
+		se.HvcC.NaluArrays = nil
+		se.SetType("hev1")
+	}
+	samples[0].Data = append(frame(t, 4, ps), samples[0].Data...)
+}
+
+// readSamples returns the init segment and the samples of fragmented files.
+func readSamples(t *testing.T, inFiles ...string) (*mp4.InitSegment, []mp4.FullSample) {
+	t.Helper()
+	var init *mp4.InitSegment
+	var samples []mp4.FullSample
+	for _, inFile := range inFiles {
+		f, err := mp4.ReadMP4File(inFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Init != nil {
+			init = f.Init
+		}
+		for _, seg := range f.Segments {
+			for _, frag := range seg.Fragments {
+				fss, err := frag.GetFullSamples(init.Moov.Mvex.Trex)
+				if err != nil {
+					t.Fatal(err)
+				}
+				samples = append(samples, fss...)
+			}
+		}
+	}
+	return init, samples
+}
+
+// frame precedes each nalu with a length field of lengthSize bytes.
+func frame(t *testing.T, lengthSize int, nalus [][]byte) []byte {
+	t.Helper()
+	var sample []byte
+	for _, nalu := range nalus {
+		if len(nalu) >= 1<<(8*lengthSize) {
+			t.Fatalf("%d-byte nalu does not fit a %d-byte length field", len(nalu), lengthSize)
+		}
+		lengthField := binary.BigEndian.AppendUint32(nil, uint32(len(nalu)))
+		sample = append(append(sample, lengthField[4-lengthSize:]...), nalu...)
+	}
+	return sample
+}
+
+// build writes init and the samples, re-framed from 4-byte to lengthSize-byte
+// NALU lengths, as a fragmented file and as a progressive copy of it.
+func build(t *testing.T, init *mp4.InitSegment, samples []mp4.FullSample, lengthSize int) (fragmented, progressive string) {
+	t.Helper()
+	stsd := init.Moov.Trak.Mdia.Minf.Stbl.Stsd
+	if stsd.AvcX != nil {
+		stsd.AvcX.AvcC.NaluLengthSize = byte(lengthSize)
+	} else {
+		stsd.HvcX.HvcC.LengthSizeMinusOne = byte(lengthSize - 1)
+	}
+	frag, err := mp4.CreateFragment(1, init.Moov.Trak.Tkhd.TrackID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fs := range samples {
+		nalus, err := avc.GetNalusFromSample(fs.Data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fs.Data = frame(t, lengthSize, nalus)
+		fs.Size = uint32(len(fs.Data))
+		frag.AddFullSample(fs)
+	}
+	f := mp4.NewFile()
+	f.AddChild(init.Ftyp, 0)
+	f.AddChild(init.Moov, 0)
+	seg := mp4.NewMediaSegment()
+	seg.AddFragment(frag)
+	f.AddMediaSegment(seg)
+	fragBuf, progBuf := bytes.Buffer{}, bytes.Buffer{}
+	if err := f.Encode(&fragBuf); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := mp4.DecodeFile(bytes.NewReader(fragBuf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mp4.Defragment(decoded, bytes.NewReader(fragBuf.Bytes()), &progBuf); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fragmented, progressive = filepath.Join(dir, "fragmented.mp4"), filepath.Join(dir, "progressive.mp4")
+	if err := os.WriteFile(fragmented, fragBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(progressive, progBuf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return fragmented, progressive
 }

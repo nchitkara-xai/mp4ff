@@ -11,8 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `avc.DecConfRec.NaluLengthSize`, so an avcC with 1- or 2-byte NALU length
   fields encodes back unchanged; 0 means 4, so records that don't set it encode
-  as before. `LengthSize` on `avc.DecConfRec` and `hevc.DecConfRec` returns the
-  size in bytes
+  as before. `LengthSize` on `avc.DecConfRec`, `hevc.DecConfRec` and
+  `vvc.DecConfRec` returns the size in bytes
+- `VisualSampleEntryBox.LengthSize` returns the NALU length field size that the
+  avcC, hvcC or vvcC of a sample entry declares
+- `...WithLengthSize` variants of the sample scanning functions in `avc` and
+  `hevc` (`FindNaluTypes`, `FindNaluTypesUpToFirstVideoNALU`/`...Nalu`,
+  `ContainsNaluType`, `IsIDRSample`, `IsRAPSample`, `HasParameterSets`,
+  `GetParameterSets` and `avc.GetNalusFromSample`) for samples with 1-, 2- or
+  4-byte NALU length fields, as returned by `LengthSize`
 - `hevc.ParseSPSNALUnitWithVPS` parses an SPS with a map of the VPSs it may
   refer to, so that a multilayer extension SPS gets the chroma format, picture
   size, conformance window and bit depths that it does not signal itself
@@ -96,15 +103,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   2-byte NALU length fields, which ISO/IEC 14496-15 allows besides 4 bytes, so
   files using them now decode. They and `hevc.DecodeLHEVCDecConfRec` return
   `ErrLengthSize` only for the 3-byte size, which the specification does not
-  allow. `InitProtect`, `ExtractInitProtectData` and `mp4ff-nallister` reject
-  tracks with 1- or 2-byte length fields, and so does `mp4ff-pslister` when it
-  has to read the parameter sets from the samples. `mp4ff-mvhevc add` declares
-  the input's length size in the hvcC and lhvC that it writes, since it copies
-  the samples as they are. The NALU scanning helpers
-  (`FindNaluTypes`, `GetNalusFromSample`, `GetParameterSets`,
-  `ConvertSampleToByteStream` and the like) and
+  allow. `ConvertSampleToByteStream` and
   `GetAVCProtectRanges`/`GetHEVCProtectRanges` still assume 4-byte length
-  fields, so callers handling such files should check `LengthSize()`
+  fields, so `InitProtect` and `ExtractInitProtectData` reject tracks with 1- or
+  2-byte ones
+- `mp4ff-nallister` and `mp4ff-pslister` read samples with the NALU length size
+  of the track's avcC, hvcC or (nallister) vvcC, also in `encv` sample entries;
+  `mp4ff-nallister` used to read a VVC track with 4-byte lengths whatever its
+  vvcC declared. `mp4ff-mvhevc add` declares the input's length size in the
+  hvcC and lhvC that it writes, since it copies the samples as they are
+- `vvc.DecodeVVCDecConfRec` returns the new `vvc.ErrLengthSize` for the 3-byte
+  NALU length size, like the avcC, hvcC and lhvC decoders
 - The commands and examples that create their own output file now buffer their
   writes, like `WriteToFile` already does. `Encode` makes about one write call
   per box, so writing straight to a file cost a syscall per box: affects
@@ -269,7 +278,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and in `GetAVCProtectRanges`/`GetHEVCProtectRanges`. Affected are
   `FindNaluTypes`, `FindNaluTypesUpToFirstVideoNALU`/`...Nalu`,
   `ContainsNaluType`, `IsIDRSample`, `IsRAPSample`, `HasParameterSets`,
-  `GetParameterSets`, `GetNalusFromSample` and `ConvertSampleToByteStream`
+  `GetParameterSets`, `GetNalusFromSample` and `ConvertSampleToByteStream`.
+  `hevc.SplitNalusByLayerID` also panicked, on 32-bit platforms, for a length
+  field of 2^31 or more
 - `avc.ContainsNaluType` (and thereby `avc.IsIDRSample`) lacked the guard
   against samples shorter than 4 bytes that the other scanning functions have,
   so the loop limit underflowed and the first read went outside the sample

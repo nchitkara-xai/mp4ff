@@ -352,3 +352,16 @@ func (b *VisualSampleEntryBox) ConvertAvc3ToAvc1(spss [][]byte, ppss [][]byte) e
 	b.AvcC.PPSnalus = ppss
 	return nil
 }
+
+// LengthSize returns the NALU length field size in bytes from the avcC, hvcC, or vvcC, or 0 if there is none.
+func (b *VisualSampleEntryBox) LengthSize() int {
+	switch {
+	case b.AvcC != nil:
+		return b.AvcC.LengthSize()
+	case b.HvcC != nil:
+		return b.HvcC.LengthSize()
+	case b.VvcC != nil:
+		return b.VvcC.LengthSize()
+	}
+	return 0
+}

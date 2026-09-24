@@ -205,3 +205,43 @@ func TestAvc1WithTooLongCompressorNameLength(t *testing.T) {
 		t.Fatal("expected decoded btrt child")
 	}
 }
+
+func TestVisualSampleEntryLengthSize(t *testing.T) {
+	sps, _ := hex.DecodeString(sps1nalu)
+	pps, _ := hex.DecodeString(pps1nalu)
+	avcC, err := mp4.CreateAvcC([][]byte{sps}, [][]byte{pps}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	avcC.NaluLengthSize = 2
+	vps, _ := hex.DecodeString(vpsHex)
+	hevcSPS, _ := hex.DecodeString(spsHex)
+	hevcPPS, _ := hex.DecodeString(ppsHex)
+	hvcC, err := mp4.CreateHvcC([][]byte{vps}, [][]byte{hevcSPS}, [][]byte{hevcPPS}, true, true, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hvcC.LengthSizeMinusOne = 0
+	vvcC, err := mp4.CreateVvcC(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encv := mp4.CreateVisualSampleEntryBox("avc1", 1280, 720, avcC)
+	encv.SetType("encv")
+
+	cases := []struct {
+		entry *mp4.VisualSampleEntryBox
+		want  int
+	}{
+		{mp4.CreateVisualSampleEntryBox("avc1", 1280, 720, avcC), 2},
+		{encv, 2},
+		{mp4.CreateVisualSampleEntryBox("hvc1", 1280, 720, hvcC), 1},
+		{mp4.CreateVisualSampleEntryBox("vvc1", 1280, 720, vvcC), 4},
+		{mp4.CreateVisualSampleEntryBox("av01", 1280, 720, nil), 0},
+	}
+	for _, c := range cases {
+		if got := c.entry.LengthSize(); got != c.want {
+			t.Errorf("%s: LengthSize() = %d, want %d", c.entry.Type(), got, c.want)
+		}
+	}
+}

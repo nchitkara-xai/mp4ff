@@ -209,6 +209,7 @@ func parseMp4File(w io.Writer, r io.Reader, codec string, verbose bool) error {
 	}
 
 	var trackID uint32
+	lengthSize := 4
 	if parsedMp4.Moov != nil {
 		foundPS := false
 		foundCodec := ""
@@ -222,14 +223,12 @@ func parseMp4File(w io.Writer, r io.Reader, codec string, verbose bool) error {
 		}
 		for _, trak := range parsedMp4.Moov.Traks {
 			if trak.Tkhd.TrackID == trackID {
-				if err := checkNaluLengthSize(trak.Mdia.Minf.Stbl.Stsd); err != nil {
-					return err
-				}
+				lengthSize = sampleLengthSize(trak.Mdia.Minf.Stbl.Stsd)
 			}
 		}
 	}
 	if parsedMp4.IsFragmented() {
-		err = parseMp4Fragment(w, parsedMp4, trackID, codec, verbose)
+		err = parseMp4Fragment(w, parsedMp4, trackID, lengthSize, codec, verbose)
 		if err != nil {
 			return fmt.Errorf("parseMp4Fragment: %w", err)
 		}
@@ -254,13 +253,13 @@ func parseMp4File(w io.Writer, r io.Reader, codec string, verbose bool) error {
 			}
 			switch codec {
 			case "avc":
-				spsNalus, ppsNalus := avc.GetParameterSets(sampleData)
+				spsNalus, ppsNalus := avc.GetParameterSetsWithLengthSize(sampleData, lengthSize)
 				if len(spsNalus) == 0 {
 					return fmt.Errorf("no AVC SPS found")
 				}
 				return printAvcPS(w, spsNalus, ppsNalus, verbose)
 			case "hevc":
-				vpsNalus, spsNalus, ppsNalus := hevc.GetParameterSets(sampleData)
+				vpsNalus, spsNalus, ppsNalus := hevc.GetParameterSetsWithLengthSize(sampleData, lengthSize)
 				if len(spsNalus) == 0 {
 					return fmt.Errorf("no HEVC SPS found")
 				}
@@ -323,23 +322,18 @@ func parseMp4Init(w io.Writer, parsedMp4 *mp4.File, verbose bool) (trackID uint3
 	return 0, codec, false, fmt.Errorf("no parsable video track found")
 }
 
-// checkNaluLengthSize fails for an avcC or hvcC with NALU length fields other
-// than the 4 bytes that GetParameterSets reads.
-func checkNaluLengthSize(stsd *mp4.StsdBox) error {
-	lengthSize := 4
-	switch {
-	case stsd.AvcX != nil && stsd.AvcX.AvcC != nil:
-		lengthSize = stsd.AvcX.AvcC.LengthSize()
-	case stsd.HvcX != nil && stsd.HvcX.HvcC != nil:
-		lengthSize = stsd.HvcX.HvcC.LengthSize()
+// sampleLengthSize returns the NALU length field size that the first sample
+// entry of stsd declares, or 4 if it declares none.
+func sampleLengthSize(stsd *mp4.StsdBox) int {
+	if len(stsd.Children) > 0 {
+		if se, ok := stsd.Children[0].(*mp4.VisualSampleEntryBox); ok && se.LengthSize() > 0 {
+			return se.LengthSize()
+		}
 	}
-	if lengthSize != 4 {
-		return fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", lengthSize)
-	}
-	return nil
+	return 4
 }
 
-func parseMp4Fragment(w io.Writer, parsedMp4 *mp4.File, trackID uint32, codec string, verbose bool) error {
+func parseMp4Fragment(w io.Writer, parsedMp4 *mp4.File, trackID uint32, lengthSize int, codec string, verbose bool) error {
 	if len(parsedMp4.Segments) == 0 || len(parsedMp4.Segments[0].Fragments) == 0 {
 		return fmt.Errorf("no moov or fragment found in mp4 file")
 	}
@@ -357,10 +351,10 @@ func parseMp4Fragment(w io.Writer, parsedMp4 *mp4.File, trackID uint32, codec st
 	fs := samples[0]
 	switch codec {
 	case "avc":
-		spsNalus, ppsNalus := avc.GetParameterSets(fs.Data)
+		spsNalus, ppsNalus := avc.GetParameterSetsWithLengthSize(fs.Data, lengthSize)
 		return printAvcPS(w, spsNalus, ppsNalus, verbose)
 	case "hevc":
-		vpsNalus, spsNalus, ppsNalus := hevc.GetParameterSets(fs.Data)
+		vpsNalus, spsNalus, ppsNalus := hevc.GetParameterSetsWithLengthSize(fs.Data, lengthSize)
 		return printHevcPS(w, vpsNalus, spsNalus, ppsNalus, verbose)
 	default:
 		return fmt.Errorf("unknown codec: %s", codec)

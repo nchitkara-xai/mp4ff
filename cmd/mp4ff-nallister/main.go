@@ -121,11 +121,11 @@ func run(args []string, stdout io.Writer) error {
 						}
 					}
 				}
-				err = printAVCNalus(stdout, avcSPS, frame, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
+				err = printAVCNalus(stdout, avcSPS, frame, 4, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
 			case "hevc":
-				err = printHEVCNalus(stdout, frame, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
+				err = printHEVCNalus(stdout, frame, 4, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
 			case "vvc":
-				err = printVVCNalus(stdout, frame, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
+				err = printVVCNalus(stdout, frame, 4, i+1, 0, o.seiLevel, o.printPsHex, o.printRaw)
 			default:
 				return fmt.Errorf("unsupported codec: %s", o.codec)
 			}
@@ -184,9 +184,7 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 	} else if stbl.Stsd.VvcX != nil {
 		codec = "vvc"
 	}
-	if err := checkNaluLengthSize(stbl.Stsd); err != nil {
-		return err
-	}
+	lengthSize := sampleLengthSize(stbl.Stsd)
 	nrSamples := stbl.Stsz.SampleNumber
 	mdat := f.Mdat
 
@@ -216,7 +214,7 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 		if err != nil {
 			return fmt.Errorf("sample %d: %w", sampleNr, err)
 		}
-		nalus, err := avc.GetNalusFromSample(sample)
+		nalus, err := avc.GetNalusFromSampleWithLengthSize(sample, lengthSize)
 		if err != nil {
 			return err
 		}
@@ -232,11 +230,11 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 					}
 				}
 			}
-			err = printAVCNalus(w, avcSPS, nalus, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
+			err = printAVCNalus(w, avcSPS, nalus, lengthSize, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
 		case "hevc", "h.265", "h265":
-			err = printHEVCNalus(w, nalus, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
+			err = printHEVCNalus(w, nalus, lengthSize, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
 		case "vvc", "h.266", "h266":
-			err = printVVCNalus(w, nalus, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
+			err = printVVCNalus(w, nalus, lengthSize, sampleNr, int64(decTime)+cto, seiLevel, parameterSets, nrRaw)
 		default:
 			return fmt.Errorf("unknown codec: %s", codec)
 		}
@@ -250,20 +248,15 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 	return nil
 }
 
-// checkNaluLengthSize fails for an avcC or hvcC with NALU length fields other
-// than the 4 bytes that avc.GetNalusFromSample reads.
-func checkNaluLengthSize(stsd *mp4.StsdBox) error {
-	lengthSize := 4
-	switch {
-	case stsd.AvcX != nil && stsd.AvcX.AvcC != nil:
-		lengthSize = stsd.AvcX.AvcC.LengthSize()
-	case stsd.HvcX != nil && stsd.HvcX.HvcC != nil:
-		lengthSize = stsd.HvcX.HvcC.LengthSize()
+// sampleLengthSize returns the NALU length field size that the first sample
+// entry of stsd declares, or 4 if it declares none.
+func sampleLengthSize(stsd *mp4.StsdBox) int {
+	if len(stsd.Children) > 0 {
+		if se, ok := stsd.Children[0].(*mp4.VisualSampleEntryBox); ok && se.LengthSize() > 0 {
+			return se.LengthSize()
+		}
 	}
-	if lengthSize != 4 {
-		return fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", lengthSize)
-	}
-	return nil
+	return 4
 }
 
 func findFirstVideoTrak(moov *mp4.MoovBox) (*mp4.TrakBox, bool) {
@@ -292,6 +285,7 @@ func parseFragmentedMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec string
 	var avcSPS *avc.SPS
 	var err error
 	var editListOffset int64 = 0
+	lengthSize := 4
 	if f.Init != nil { // Auto-detect codec if moov box is there
 		moov := f.Init.Moov
 		videoTrak, ok := findFirstVideoTrak(moov)
@@ -312,9 +306,7 @@ func parseFragmentedMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec string
 		} else if stbl.Stsd.VvcX != nil {
 			codec = "vvc"
 		}
-		if err := checkNaluLengthSize(stbl.Stsd); err != nil {
-			return err
-		}
+		lengthSize = sampleLengthSize(stbl.Stsd)
 		trex, _ = moov.Mvex.GetTrex(videoTrak.Tkhd.TrackID)
 		editListOffset = getVideoListOffset(moov, videoTrak)
 	}
@@ -329,17 +321,17 @@ func parseFragmentedMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec string
 		}
 	}
 	for i, s := range iSamples {
-		nalus, err := avc.GetNalusFromSample(s.Data)
+		nalus, err := avc.GetNalusFromSampleWithLengthSize(s.Data, lengthSize)
 		if err != nil {
 			return err
 		}
 		switch codec {
 		case "avc", "h.264", "h264":
-			err = printAVCNalus(w, avcSPS, nalus, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
+			err = printAVCNalus(w, avcSPS, nalus, lengthSize, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
 		case "hevc", "h.265", "h265":
-			err = printHEVCNalus(w, nalus, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
+			err = printHEVCNalus(w, nalus, lengthSize, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
 		case "vvc", "h.266", "h266":
-			err = printVVCNalus(w, nalus, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
+			err = printVVCNalus(w, nalus, lengthSize, i+1, s.PresentationTime()+editListOffset, seiLevel, parameterSets, nrRaw)
 		default:
 			return fmt.Errorf("unknown codec: %s", codec)
 		}
@@ -371,12 +363,13 @@ func getVideoListOffset(moov *mp4.MoovBox, videoTrak *mp4.TrakBox) int64 {
 	return editListOffset
 }
 
-func printAVCNalus(w io.Writer, avcSPS *avc.SPS, nalus [][]byte, nr int, pts int64, seiLevel int, parameterSets bool, nrRaw int) error {
+func printAVCNalus(w io.Writer, avcSPS *avc.SPS, nalus [][]byte, lengthSize, nr int, pts int64,
+	seiLevel int, parameterSets bool, nrRaw int) error {
 	msg := ""
 	var seiNALUs [][]byte
 	totLen := 0
 	for i, nalu := range nalus {
-		totLen += 4 + len(nalu)
+		totLen += lengthSize + len(nalu)
 		if i > 0 {
 			msg += ","
 		}
@@ -422,12 +415,12 @@ func printAVCNalus(w io.Writer, avcSPS *avc.SPS, nalus [][]byte, nr int, pts int
 	return nil
 }
 
-func printHEVCNalus(w io.Writer, nalus [][]byte, nr int, pts int64, seiLevel int, parameterSets bool, nrRaw int) error {
+func printHEVCNalus(w io.Writer, nalus [][]byte, lengthSize, nr int, pts int64, seiLevel int, parameterSets bool, nrRaw int) error {
 	msg := ""
 	var seiNALUs [][]byte
 	totLen := 0
 	for i, nalu := range nalus {
-		totLen += 4 + len(nalu)
+		totLen += lengthSize + len(nalu)
 		if i > 0 {
 			msg += ","
 		}
@@ -460,12 +453,12 @@ func printHEVCNalus(w io.Writer, nalus [][]byte, nr int, pts int64, seiLevel int
 	return nil
 }
 
-func printVVCNalus(w io.Writer, nalus [][]byte, nr int, pts int64, seiLevel int, parameterSets bool, nrRaw int) error {
+func printVVCNalus(w io.Writer, nalus [][]byte, lengthSize, nr int, pts int64, seiLevel int, parameterSets bool, nrRaw int) error {
 	msg := ""
 	var seiNALUs [][]byte
 	totLen := 0
 	for i, nalu := range nalus {
-		totLen += 4 + len(nalu)
+		totLen += lengthSize + len(nalu)
 		if i > 0 {
 			msg += ","
 		}

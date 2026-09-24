@@ -1,11 +1,15 @@
 package vvc
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
 	"github.com/Eyevinn/mp4ff/bits"
 )
+
+// ErrLengthSize is returned by DecodeVVCDecConfRec for the 3-byte NALU length size.
+var ErrLengthSize = errors.New("NALU length size must be 1, 2, or 4 bytes")
 
 /*
 PTL represents profile-tier-level information (VvcPTLRecord) Section 11.2.4.1.2
@@ -91,6 +95,12 @@ type DecConfRec struct {
 	MaxPictureHeight   uint16
 	AvgFrameRate       uint16
 	NaluArrays         []NaluArray
+}
+
+// LengthSize returns the size in bytes of the NALU length fields in the
+// samples, which is LengthSizeMinusOne + 1.
+func (d *DecConfRec) LengthSize() int {
+	return int(d.LengthSizeMinusOne) + 1
 }
 
 // Size returns the size of the decoder configuration record
@@ -270,6 +280,9 @@ func DecodeVVCDecConfRec(data []byte) (DecConfRec, error) {
 	// First byte: reserved (5 bits) + lengthSizeMinusOne (2 bits) + ptlPresentFlag (1 bit)
 	firstByte := sr.ReadUint8()
 	d.LengthSizeMinusOne = (firstByte >> 1) & 0x03
+	if d.LengthSizeMinusOne == 2 {
+		return DecConfRec{}, ErrLengthSize
+	}
 	d.PtlPresentFlag = (firstByte & 0x01) != 0
 
 	if d.PtlPresentFlag {

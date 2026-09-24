@@ -2,6 +2,7 @@ package vvc
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -334,5 +335,28 @@ func TestParseNaluHeader(t *testing.T) {
 				t.Errorf("NuhTemporalIdPlus1 mismatch: got %d, want %d", header.NuhTemporalIdPlus1, tc.expectedHeader.NuhTemporalIdPlus1)
 			}
 		})
+	}
+}
+
+func TestDecConfRecLengthSize(t *testing.T) {
+	for _, lengthSize := range []int{1, 2, 3, 4} {
+		in := DecConfRec{LengthSizeMinusOne: uint8(lengthSize - 1), NaluArrays: []NaluArray{}}
+		buf := bytes.Buffer{}
+		if err := in.Encode(&buf); err != nil {
+			t.Fatal(err)
+		}
+		got, err := DecodeVVCDecConfRec(buf.Bytes())
+		if lengthSize == 3 {
+			if !errors.Is(err, ErrLengthSize) {
+				t.Errorf("3-byte lengths: got error %v, want %v", err, ErrLengthSize)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.LengthSize() != lengthSize {
+			t.Errorf("LengthSize() = %d, want %d", got.LengthSize(), lengthSize)
+		}
 	}
 }
