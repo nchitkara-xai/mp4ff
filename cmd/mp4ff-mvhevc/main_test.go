@@ -301,6 +301,44 @@ func TestAddAppleSpatialMp4(t *testing.T) {
 	}
 }
 
+// TestAddMp4KeepsLengthSize checks that the samples, which are copied as they
+// are, keep the NALU length size that the input hvcC and lhvC declare.
+func TestAddMp4KeepsLengthSize(t *testing.T) {
+	raw, err := os.ReadFile("testdata/stereo_spatial.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// lengthSizeMinusOne position in each box payload
+	for boxType, pos := range map[string]int{"hvcC": 21, "lhvC": 4} {
+		typePos := bytes.Index(raw, []byte(boxType))
+		if typePos < 0 {
+			t.Fatalf("no %s box found", boxType)
+		}
+		p := typePos + 4 + pos
+		raw[p] = raw[p]&0xfc | 1
+	}
+	in := filepath.Join(t.TempDir(), "in.mp4")
+	if err := os.WriteFile(in, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out.mp4")
+	if err := run([]string{appName, "add", in, out}, &bytes.Buffer{}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	parsed, err := mp4.ReadMP4File(out)
+	if err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	se := parsed.Moov.Trak.Mdia.Minf.Stbl.Stsd.HvcX
+	if se.HvcC.LengthSize() != 2 {
+		t.Errorf("output hvcC declares %d-byte NALU lengths, want 2", se.HvcC.LengthSize())
+	}
+	if se.LhvC == nil || se.LhvC.LengthSize() != 2 {
+		t.Errorf("output lhvC missing or not declaring 2-byte NALU lengths: %+v", se.LhvC)
+	}
+}
+
 // TestInfoDoViAndTrgr checks that info reports a Dolby Vision configuration
 // and track group types (registered and unregistered).
 func TestInfoDoViAndTrgr(t *testing.T) {

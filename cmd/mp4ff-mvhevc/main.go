@@ -428,6 +428,7 @@ type mvhevcInput struct {
 	width, height                      uint16
 	timeScale                          uint32
 	sampleDur                          uint32
+	lengthSizeMinusOne                 byte // NALU length field size in the samples, minus one
 	samples                            []mvhevcSample
 
 	addSpatial  bool
@@ -602,6 +603,8 @@ func parseAnnexBInput(inPath string, fps float64, w io.Writer) (*mvhevcInput, er
 		timeScale: timeScale,
 		sampleDur: sampleDur,
 		samples:   samples,
+
+		lengthSizeMinusOne: 3,
 	}, nil
 }
 
@@ -733,6 +736,8 @@ func parseMp4Input(inPath string, w io.Writer) (*mvhevcInput, error) {
 		timeScale: timeScale,
 		sampleDur: sampleDur,
 		samples:   samples,
+
+		lengthSizeMinusOne: hdcr.LengthSizeMinusOne,
 	}
 
 	// Carry over any existing spatial metadata from the input sample entry.
@@ -765,6 +770,7 @@ func buildAndWriteMp4(inp *mvhevcInput, outPath string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("CreateHvcC: %w", err)
 	}
+	hvcC.LengthSizeMinusOne = inp.lengthSizeMinusOne
 	if len(inp.baseSEI) > 0 {
 		hvcC.AddNaluArrays([]hevc.NaluArray{hevc.NewNaluArray(true, hevc.NALU_SEI_PREFIX, inp.baseSEI)})
 	}
@@ -772,6 +778,7 @@ func buildAndWriteMp4(inp *mvhevcInput, outPath string, w io.Writer) error {
 	var lhvC *mp4.LhvCBox
 	if len(inp.enhSPS) > 0 || len(inp.enhPPS) > 0 {
 		lhvC = mp4.CreateLhvCFromNalus(inp.enhSPS, inp.enhPPS)
+		lhvC.LengthSizeMinusOne = inp.lengthSizeMinusOne
 	}
 
 	outFile := mp4.NewFile()

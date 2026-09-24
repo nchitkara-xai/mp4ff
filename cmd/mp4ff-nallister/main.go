@@ -184,6 +184,9 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 	} else if stbl.Stsd.VvcX != nil {
 		codec = "vvc"
 	}
+	if err := checkNaluLengthSize(stbl.Stsd); err != nil {
+		return err
+	}
 	nrSamples := stbl.Stsz.SampleNumber
 	mdat := f.Mdat
 
@@ -247,6 +250,22 @@ func parseProgressiveMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec strin
 	return nil
 }
 
+// checkNaluLengthSize fails for an avcC or hvcC with NALU length fields other
+// than the 4 bytes that avc.GetNalusFromSample reads.
+func checkNaluLengthSize(stsd *mp4.StsdBox) error {
+	lengthSize := 4
+	switch {
+	case stsd.AvcX != nil && stsd.AvcX.AvcC != nil:
+		lengthSize = stsd.AvcX.AvcC.LengthSize()
+	case stsd.HvcX != nil && stsd.HvcX.HvcC != nil:
+		lengthSize = stsd.HvcX.HvcC.LengthSize()
+	}
+	if lengthSize != 4 {
+		return fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", lengthSize)
+	}
+	return nil
+}
+
 func findFirstVideoTrak(moov *mp4.MoovBox) (*mp4.TrakBox, bool) {
 	for _, inTrak := range moov.Traks {
 		hdlrType := inTrak.Mdia.Hdlr.HandlerType
@@ -292,6 +311,9 @@ func parseFragmentedMp4(w io.Writer, f *mp4.File, maxNrSamples int, codec string
 			codec = "hevc"
 		} else if stbl.Stsd.VvcX != nil {
 			codec = "vvc"
+		}
+		if err := checkNaluLengthSize(stbl.Stsd); err != nil {
+			return err
 		}
 		trex, _ = moov.Mvex.GetTrex(videoTrak.Tkhd.TrackID)
 		editListOffset = getVideoListOffset(moov, videoTrak)

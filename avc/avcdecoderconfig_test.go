@@ -3,6 +3,8 @@ package avc
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 
@@ -202,6 +204,92 @@ func TestAvcDecoderConfigRecordTrailingBytes(t *testing.T) {
 			if !bytes.Equal(enc.Bytes(), byteData) {
 				t.Errorf("encoded record differs from input:\n got %s\nwant %s",
 					hex.EncodeToString(enc.Bytes()), hex.EncodeToString(byteData))
+			}
+		})
+	}
+}
+
+func TestAvcDecoderConfigRecordLengthSize(t *testing.T) {
+	// Same record as in TestAvcDecoderConfigRecord, but with each lengthSizeMinusOne value
+	cases := []struct {
+		lengthSizeMinusOne byte
+		naluLengthSize     byte
+		wantErr            error
+	}{
+		{lengthSizeMinusOne: 0, naluLengthSize: 1},
+		{lengthSizeMinusOne: 1, naluLengthSize: 2},
+		{lengthSizeMinusOne: 2, wantErr: ErrLengthSize},
+		{lengthSizeMinusOne: 3, naluLengthSize: 0},
+	}
+	for _, c := range cases {
+		lengthSize := int(c.lengthSizeMinusOne) + 1
+		t.Run(fmt.Sprintf("%d-byte", lengthSize), func(t *testing.T) {
+			byteData, _ := hex.DecodeString(avcDecoderConfigRecord)
+			byteData[4] = 0xfc | c.lengthSizeMinusOne
+
+			got, err := DecodeAVCDecConfRec(byteData)
+			if c.wantErr != nil {
+				if !errors.Is(err, c.wantErr) {
+					t.Errorf("got error %v, want %v", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Error parsing AVCDecoderConfigurationRecord: %v", err)
+			}
+			if got.NaluLengthSize != c.naluLengthSize {
+				t.Errorf("NaluLengthSize = %d, want %d", got.NaluLengthSize, c.naluLengthSize)
+			}
+			if got.LengthSize() != lengthSize {
+				t.Errorf("LengthSize() = %d, want %d", got.LengthSize(), lengthSize)
+			}
+
+			enc := bytes.Buffer{}
+			err = got.Encode(&enc)
+			if err != nil {
+				t.Fatalf("Error encoding AVCDecoderConfigurationRecord: %v", err)
+			}
+			if !bytes.Equal(enc.Bytes(), byteData) {
+				t.Errorf("encoded record differs from input:\n got %s\nwant %s",
+					hex.EncodeToString(enc.Bytes()), hex.EncodeToString(byteData))
+			}
+		})
+	}
+}
+
+func TestAvcDecoderConfigRecordEncodeLengthSize(t *testing.T) {
+	spsBytes, _ := hex.DecodeString(sps)
+	ppsBytes, _ := hex.DecodeString(pps)
+	created, err := CreateAVCDecConfRec([][]byte{spsBytes}, [][]byte{ppsBytes}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		rec     DecConfRec
+		wantErr error
+	}{
+		{name: "zero value", rec: DecConfRec{}},
+		{name: "CreateAVCDecConfRec", rec: *created},
+		{name: "explicit 4 bytes", rec: DecConfRec{NaluLengthSize: 4}},
+		{name: "3 bytes", rec: DecConfRec{NaluLengthSize: 3}, wantErr: ErrLengthSize},
+		{name: "5 bytes", rec: DecConfRec{NaluLengthSize: 5}, wantErr: ErrLengthSize},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			enc := bytes.Buffer{}
+			err := c.rec.Encode(&enc)
+			if c.wantErr != nil {
+				if !errors.Is(err, c.wantErr) {
+					t.Errorf("got error %v, want %v", err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Error encoding AVCDecoderConfigurationRecord: %v", err)
+			}
+			if got := enc.Bytes()[4]; got != 0xff {
+				t.Errorf("got lengthSizeMinusOne byte %#02x, want 0xff (4-byte lengths)", got)
 			}
 		})
 	}

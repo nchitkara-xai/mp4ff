@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Eyevinn/mp4ff/avc"
@@ -136,5 +137,43 @@ func TestBadChunkOffsets(t *testing.T) {
 
 	if err := run([]string{appName, badFile}, &bytes.Buffer{}); err == nil {
 		t.Error("expected error for chunk offsets outside mdat, got nil")
+	}
+}
+
+// TestShortNaluLengths checks that a track whose avcC or hvcC declares 2-byte
+// NALU lengths gives a clear error instead of misparsing its samples.
+func TestShortNaluLengths(t *testing.T) {
+	cases := []struct {
+		desc          string
+		inFile        string
+		boxType       string
+		lengthSizePos int // position of lengthSizeMinusOne in the box payload
+	}{
+		{desc: "progressive avc", inFile: "testdata/h264.mp4", boxType: "avcC", lengthSizePos: 4},
+		{desc: "progressive hevc", inFile: "testdata/hevc.mp4", boxType: "hvcC", lengthSizePos: 21},
+		{desc: "fragmented avc", inFile: "../../mp4/testdata/prog_8s_dec_dashinit.mp4", boxType: "avcC", lengthSizePos: 4},
+	}
+	for _, c := range cases {
+		t.Run(c.desc, func(t *testing.T) {
+			raw, err := os.ReadFile(c.inFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			typePos := bytes.Index(raw, []byte(c.boxType))
+			if typePos < 0 {
+				t.Fatalf("no %s box found", c.boxType)
+			}
+			p := typePos + 4 + c.lengthSizePos
+			raw[p] = raw[p]&0xfc | 1
+			badFile := filepath.Join(t.TempDir(), "short_lengths.mp4")
+			if err := os.WriteFile(badFile, raw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			err = run([]string{appName, badFile}, &bytes.Buffer{})
+			if err == nil || !strings.Contains(err.Error(), "2-byte NALU lengths not supported") {
+				t.Errorf("got error %v, want 2-byte NALU lengths not supported", err)
+			}
+		})
 	}
 }

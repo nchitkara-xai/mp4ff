@@ -3,6 +3,9 @@ package hevc
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -132,6 +135,99 @@ func TestDecodeConfRec(t *testing.T) {
 	err = hdcr.Encode(&out)
 	if err != nil {
 		t.Error(err)
+	}
+}
+
+func TestDecodeConfRecLengthSize(t *testing.T) {
+	vps, _ := hex.DecodeString("40010c01ffff016000000300900000030000030078959809")
+	sps, _ := hex.DecodeString("420101016000000300900000030000030078a00502016965959a4932bc05a80808082000000300200000030321")
+	pps, _ := hex.DecodeString("4401c172b46240")
+	hdcr, err := CreateHEVCDecConfRec([][]byte{vps}, [][]byte{sps}, [][]byte{pps}, true, true, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hvcC := bytes.Buffer{}
+	if err := hdcr.Encode(&hvcC); err != nil {
+		t.Fatal(err)
+	}
+	lhvC := bytes.Buffer{}
+	if err := hdcr.EncodeLHEVC(&lhvC); err != nil {
+		t.Fatal(err)
+	}
+
+	records := []struct {
+		name          string
+		data          []byte
+		lengthSizePos int // lengthSizeMinusOne is in the low two bits of the byte before numOfArrays
+		decode        func([]byte) (DecConfRec, error)
+		encode        func(*DecConfRec, io.Writer) error
+	}{
+		{"hvcC", hvcC.Bytes(), 21, DecodeHEVCDecConfRec, (*DecConfRec).Encode},
+		{"lhvC", lhvC.Bytes(), 4, DecodeLHEVCDecConfRec, (*DecConfRec).EncodeLHEVC},
+	}
+	testCases := []struct {
+		lengthSizeMinusOne byte
+		wantErr            error
+	}{
+		{lengthSizeMinusOne: 0},
+		{lengthSizeMinusOne: 1},
+		{lengthSizeMinusOne: 2, wantErr: ErrLengthSize},
+		{lengthSizeMinusOne: 3},
+	}
+	for _, rec := range records {
+		for _, tc := range testCases {
+			lengthSize := int(tc.lengthSizeMinusOne) + 1
+			t.Run(fmt.Sprintf("%s %d-byte", rec.name, lengthSize), func(t *testing.T) {
+				data := append([]byte{}, rec.data...)
+				data[rec.lengthSizePos] = data[rec.lengthSizePos]&0xfc | tc.lengthSizeMinusOne
+
+				got, err := rec.decode(data)
+				if tc.wantErr != nil {
+					if !errors.Is(err, tc.wantErr) {
+						t.Errorf("got error %v, want %v", err, tc.wantErr)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.LengthSizeMinusOne != tc.lengthSizeMinusOne {
+					t.Errorf("LengthSizeMinusOne = %d, want %d", got.LengthSizeMinusOne, tc.lengthSizeMinusOne)
+				}
+				if got.LengthSize() != lengthSize {
+					t.Errorf("LengthSize() = %d, want %d", got.LengthSize(), lengthSize)
+				}
+
+				out := bytes.Buffer{}
+				if err := rec.encode(&got, &out); err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(out.Bytes(), data) {
+					t.Errorf("encoded record differs from input:\n got %s\nwant %s",
+						hex.EncodeToString(out.Bytes()), hex.EncodeToString(data))
+				}
+			})
+		}
+	}
+}
+
+func TestEncodeConfRecBadLengthSize(t *testing.T) {
+	encoders := []struct {
+		name   string
+		encode func(*DecConfRec, io.Writer) error
+	}{
+		{"hvcC", (*DecConfRec).Encode},
+		{"lhvC", (*DecConfRec).EncodeLHEVC},
+	}
+	for _, enc := range encoders {
+		for _, lengthSizeMinusOne := range []byte{2, 4} {
+			t.Run(fmt.Sprintf("%s LengthSizeMinusOne %d", enc.name, lengthSizeMinusOne), func(t *testing.T) {
+				hdcr := DecConfRec{ConfigurationVersion: 1, LengthSizeMinusOne: lengthSizeMinusOne}
+				if err := enc.encode(&hdcr, &bytes.Buffer{}); !errors.Is(err, ErrLengthSize) {
+					t.Errorf("got error %v, want %v", err, ErrLengthSize)
+				}
+			})
+		}
 	}
 }
 

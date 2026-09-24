@@ -153,7 +153,7 @@ func naluFits(pos, naluLength uint32, sampleLength int) bool {
 	return naluLength > 0 && uint64(pos)+uint64(naluLength) <= uint64(sampleLength)
 }
 
-// FindNaluTypes - find list of nalu types in sample
+// FindNaluTypes - find list of nalu types in sample with 4-byte NALU lengths
 func FindNaluTypes(sample []byte) []NaluType {
 	naluList := make([]NaluType, 0)
 	length := len(sample)
@@ -174,7 +174,7 @@ func FindNaluTypes(sample []byte) []NaluType {
 	return naluList
 }
 
-// FindNaluTypesUpToFirstVideoNalu - all nalu types up to first video nalu
+// FindNaluTypesUpToFirstVideoNalu - all nalu types up to first video nalu in sample with 4-byte NALU lengths
 func FindNaluTypesUpToFirstVideoNalu(sample []byte) []NaluType {
 	naluList := make([]NaluType, 0)
 	length := len(sample)
@@ -203,7 +203,7 @@ func IsVideoNaluType(naluType NaluType) bool {
 	return naluType <= highestVideoNaluType
 }
 
-// ContainsNaluType - is specific NaluType present in sample
+// ContainsNaluType - is specific NaluType present in sample with 4-byte NALU lengths
 func ContainsNaluType(sample []byte, specificNaluType NaluType) bool {
 	var pos uint32 = 0
 	length := len(sample)
@@ -225,7 +225,7 @@ func ContainsNaluType(sample []byte, specificNaluType NaluType) bool {
 	return false
 }
 
-// IsRAPSample - is Random Access picture (NALU 16-23)
+// IsRAPSample - is Random Access picture (NALU 16-23) in sample with 4-byte NALU lengths
 func IsRAPSample(sample []byte) bool {
 	for _, naluType := range FindNaluTypes(sample) {
 		if 16 <= naluType && naluType <= 23 {
@@ -235,7 +235,7 @@ func IsRAPSample(sample []byte) bool {
 	return false
 }
 
-// IsIDRSample - is IDR picture (NALU 19-20)
+// IsIDRSample - is IDR picture (NALU 19-20) in sample with 4-byte NALU lengths
 func IsIDRSample(sample []byte) bool {
 	for _, naluType := range FindNaluTypes(sample) {
 		if 19 <= naluType && naluType <= 20 {
@@ -245,7 +245,7 @@ func IsIDRSample(sample []byte) bool {
 	return false
 }
 
-// HasParameterSets - Check if HEVC VPS, SPS and PPS are present
+// HasParameterSets - Check if HEVC VPS, SPS and PPS are present in sample with 4-byte NALU lengths
 func HasParameterSets(b []byte) bool {
 	naluTypeList := FindNaluTypesUpToFirstVideoNalu(b)
 	var hasVPS, hasSPS, hasPPS bool
@@ -265,7 +265,7 @@ func HasParameterSets(b []byte) bool {
 	return false
 }
 
-// GetParameterSets - get (multiple) VPS,  SPS, and PPS from a sample
+// GetParameterSets - get (multiple) VPS,  SPS, and PPS from a sample with 4-byte NALU lengths
 func GetParameterSets(sample []byte) (vps, sps, pps [][]byte) {
 	sampleLength := uint32(len(sample))
 	var pos uint32 = 0

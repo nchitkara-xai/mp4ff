@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/Eyevinn/mp4ff/avc"
@@ -902,5 +903,79 @@ func TestProtectRangesBadNaluLength(t *testing.T) {
 				t.Error("GetHEVCProtectRanges: expected error, got nil")
 			}
 		})
+	}
+}
+
+// TestProtectRejectsShortNaluLengths checks that AVC and HEVC tracks with 1- or
+// 2-byte NALU length fields are rejected, since the protection ranges are
+// computed for 4-byte length fields.
+func TestProtectRejectsShortNaluLengths(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	iv, _ := hex.DecodeString("7766554433221100")
+	kidUUID, _ := mp4.NewUUIDFromString("11112222333344445555666677778888")
+
+	testCases := []struct {
+		desc          string
+		init          string
+		entryType     string
+		setLengthSize func(se *mp4.VisualSampleEntryBox, lengthSize int)
+	}{
+		{
+			desc:      "AVC",
+			init:      "testdata/init.mp4",
+			entryType: "avc1",
+			setLengthSize: func(se *mp4.VisualSampleEntryBox, lengthSize int) {
+				se.AvcC.NaluLengthSize = byte(lengthSize)
+			},
+		},
+		{
+			desc:      "HEVC",
+			init:      "testdata/hvc1_init.mp4",
+			entryType: "hvc1",
+			setLengthSize: func(se *mp4.VisualSampleEntryBox, lengthSize int) {
+				se.HvcC.LengthSizeMinusOne = byte(lengthSize - 1)
+			},
+		},
+	}
+	for _, tc := range testCases {
+		for _, lengthSize := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s %d-byte", tc.desc, lengthSize), func(t *testing.T) {
+				decodeInit := func() (*mp4.InitSegment, *mp4.VisualSampleEntryBox) {
+					t.Helper()
+					ifh, err := os.Open(tc.init)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer ifh.Close()
+					f, err := mp4.DecodeFile(ifh)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return f.Init, f.Init.Moov.Trak.Mdia.Minf.Stbl.Stsd.Children[0].(*mp4.VisualSampleEntryBox)
+				}
+				wantErr := fmt.Sprintf("%d-byte NALU lengths not supported", lengthSize)
+
+				init, se := decodeInit()
+				tc.setLengthSize(se, lengthSize)
+				_, err := mp4.InitProtect(init, key, iv, "cenc", kidUUID, nil)
+				if err == nil || !strings.Contains(err.Error(), wantErr) {
+					t.Errorf("InitProtect: got error %v, want %q", err, wantErr)
+				}
+				if se.Type() != tc.entryType || se.Sinf != nil {
+					t.Errorf("InitProtect rewrote the rejected sample entry to %s", se.Type())
+				}
+
+				// ExtractInitProtectData needs an init segment that is already protected
+				init, se = decodeInit()
+				if _, err := mp4.InitProtect(init, key, iv, "cenc", kidUUID, nil); err != nil {
+					t.Fatal(err)
+				}
+				tc.setLengthSize(se, lengthSize)
+				_, err = mp4.ExtractInitProtectData(init)
+				if err == nil || !strings.Contains(err.Error(), wantErr) {
+					t.Errorf("ExtractInitProtectData: got error %v, want %q", err, wantErr)
+				}
+			})
+		}
 	}
 }

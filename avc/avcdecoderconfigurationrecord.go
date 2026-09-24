@@ -12,7 +12,7 @@ import (
 // AVC parsing errors
 var (
 	ErrCannotParseAVCExtension = errors.New("cannot parse SPS extensions")
-	ErrLengthSize              = errors.New("can only handle 4byte NAL length size")
+	ErrLengthSize              = errors.New("NALU length size must be 1, 2, or 4 bytes")
 )
 
 // DecConfRec - AVCDecoderConfigurationRecord
@@ -20,6 +20,7 @@ type DecConfRec struct {
 	AVCProfileIndication byte
 	ProfileCompatibility byte
 	AVCLevelIndication   byte
+	NaluLengthSize       byte // NALU length field size in bytes; 0 means 4, see LengthSize
 	SPSnalus             [][]byte
 	PPSnalus             [][]byte
 	ChromaFormat         byte
@@ -77,7 +78,7 @@ func DecodeAVCDecConfRec(data []byte) (DecConfRec, error) {
 	ProfileCompatibility := data[2]
 	AVCLevelIndication := data[3]
 	LengthSizeMinus1 := data[4] & 0x03 // The first 5 bits are 1
-	if LengthSizeMinus1 != 0x3 {
+	if LengthSizeMinus1 == 2 {
 		return DecConfRec{}, ErrLengthSize
 	}
 	numSPS := data[5] & 0x1f // 5 bits following 3 reserved bits
@@ -131,6 +132,9 @@ func DecodeAVCDecConfRec(data []byte) (DecConfRec, error) {
 		SPSnalus:             spsNALUs,
 		PPSnalus:             ppsNALUs,
 	}
+	if LengthSizeMinus1 != 3 { // 4-byte lengths keep the zero value
+		adcr.NaluLengthSize = LengthSizeMinus1 + 1
+	}
 
 	// The rest of this structure may vary
 	// ISO/IEC 14496-15 2017 says that
@@ -170,6 +174,15 @@ func DecodeAVCDecConfRec(data []byte) (DecConfRec, error) {
 	return adcr, nil
 }
 
+// LengthSize returns the size in bytes of the NALU length fields in the
+// samples, which is 4 if NaluLengthSize is 0.
+func (a *DecConfRec) LengthSize() int {
+	if a.NaluLengthSize == 0 {
+		return 4
+	}
+	return int(a.NaluLengthSize)
+}
+
 // Size - total size in bytes
 func (a *DecConfRec) Size() uint64 {
 	totalSize := 7
@@ -205,13 +218,17 @@ func (a *DecConfRec) Encode(w io.Writer) error {
 
 // EncodeSW - write an AVCDecConfRec to sw
 func (a *DecConfRec) EncodeSW(sw bits.SliceWriter) error {
+	lengthSize := a.LengthSize()
+	if lengthSize != 1 && lengthSize != 2 && lengthSize != 4 {
+		return fmt.Errorf("%w, not %d", ErrLengthSize, lengthSize)
+	}
 
 	var configurationVersion byte = 1
 	sw.WriteUint8(configurationVersion)
 	sw.WriteUint8(a.AVCProfileIndication)
 	sw.WriteUint8(a.ProfileCompatibility)
 	sw.WriteUint8(a.AVCLevelIndication)
-	sw.WriteUint8(0xff) // Set length to 4
+	sw.WriteUint8(0xfc | byte(lengthSize-1)) // Added reserved 6 bits
 
 	var nrSPS = byte(len(a.SPSnalus)) | 0xe0 // Added reserved 3 bits
 	sw.WriteUint8(nrSPS)

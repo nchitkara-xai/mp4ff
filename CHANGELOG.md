@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `avc.DecConfRec.NaluLengthSize`, so an avcC with 1- or 2-byte NALU length
+  fields encodes back unchanged; 0 means 4, so records that don't set it encode
+  as before. `LengthSize` on `avc.DecConfRec` and `hevc.DecConfRec` returns the
+  size in bytes
 - `hevc.ParseSPSNALUnitWithVPS` parses an SPS with a map of the VPSs it may
   refer to, so that a multilayer extension SPS gets the chroma format, picture
   size, conformance window and bit depths that it does not signal itself
@@ -88,6 +92,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `avc.DecodeAVCDecConfRec` and `hevc.DecodeHEVCDecConfRec` accept 1- and
+  2-byte NALU length fields, which ISO/IEC 14496-15 allows besides 4 bytes, so
+  files using them now decode. They and `hevc.DecodeLHEVCDecConfRec` return
+  `ErrLengthSize` only for the 3-byte size, which the specification does not
+  allow. `InitProtect`, `ExtractInitProtectData` and `mp4ff-nallister` reject
+  tracks with 1- or 2-byte length fields, and so does `mp4ff-pslister` when it
+  has to read the parameter sets from the samples. `mp4ff-mvhevc add` declares
+  the input's length size in the hvcC and lhvC that it writes, since it copies
+  the samples as they are. The NALU scanning helpers
+  (`FindNaluTypes`, `GetNalusFromSample`, `GetParameterSets`,
+  `ConvertSampleToByteStream` and the like) and
+  `GetAVCProtectRanges`/`GetHEVCProtectRanges` still assume 4-byte length
+  fields, so callers handling such files should check `LengthSize()`
 - The commands and examples that create their own output file now buffer their
   writes, like `WriteToFile` already does. `Encode` makes about one write call
   per box, so writing straight to a file cost a syscall per box: affects
@@ -127,6 +144,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The hvcC and lhvC encoders of `hevc.DecConfRec` wrote a `LengthSizeMinusOne`
+  of 2 as an invalid record and let 4 or more spill into `TemporalIDNested`.
+  They now return `ErrLengthSize` for anything but 0, 1, or 3
+- `InitProtect` rewrote a video sample entry to `encv` before building its
+  protector, so a track whose protector could not be built, such as one with an
+  unsupported sample entry type, was left half-rewritten. The entry is now
+  rewritten only once the protector is built
 - `DecodeSgpd`/`DecodeSgpdSR` did not bound the per-entry `description_length`
   against the bytes left in the `sgpd` box, and the sample group entry
   decoders size their slices from it. A 32-byte box declaring

@@ -88,6 +88,10 @@ func GetAVCProtectRanges(spsMap map[uint32]*avc.SPS, ppsMap map[uint32]*avc.PPS,
 	return ssps, nil
 }
 
+// GetHEVCProtectRanges for common encryption from a sample with 4-byte NALU lengths.
+// The spsMap and ppsMap are only needed for CBCS mode.
+// For scheme cenc, protection ranges must be a multiple of 16 bytes leaving header and some more in the clear
+// For scheme cbcs, protection range must start after the slice header.
 func GetHEVCProtectRanges(spsMap map[uint32]*hevc.SPS, ppsMap map[uint32]*hevc.PPS,
 	sample []byte, scheme string) ([]SubSamplePattern, error) {
 	var ssps []SubSamplePattern
@@ -428,10 +432,6 @@ func InitProtect(init *InitSegment, key, iv []byte, scheme string, kid UUID, pss
 	case *VisualSampleEntryBox:
 		mediaType = "video"
 		veType := se.Type()
-		se.SetType("encv")
-		frma := FrmaBox{DataFormat: veType}
-		sinf.AddChild(&frma)
-		se.AddChild(&sinf)
 		switch veType {
 		case "avc1", "avc3":
 			ipd.newProtector, err = newAVCProtectorFactory(se.AvcC)
@@ -451,6 +451,10 @@ func InitProtect(init *InitSegment, key, iv []byte, scheme string, kid UUID, pss
 		default:
 			return nil, fmt.Errorf("visual sample entry type %s not yet supported", veType)
 		}
+		se.SetType("encv")
+		frma := FrmaBox{DataFormat: veType}
+		sinf.AddChild(&frma)
+		se.AddChild(&sinf)
 	case *AudioSampleEntryBox:
 		mediaType = "audio"
 		aeType := se.Type()
@@ -540,6 +544,9 @@ func statelessFactory(p sampleProtector) sampleProtectorFactory {
 var audioProtectorFactory = statelessFactory(funcProtector(getAudioProtectRanges))
 
 func newAVCProtectorFactory(avcC *AvcCBox) (sampleProtectorFactory, error) {
+	if n := avcC.LengthSize(); n != 4 {
+		return nil, fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", n)
+	}
 	spsMap, ppsMap, err := getAVCPSMaps(avcC.SPSnalus, avcC.PPSnalus)
 	if err != nil {
 		return nil, fmt.Errorf("get avc ps maps: %w", err)
@@ -587,6 +594,9 @@ func getHEVCPSMaps(arrays []hevc.NaluArray) (map[uint32]*hevc.SPS, map[uint32]*h
 }
 
 func newHEVCProtectorFactory(hvcC *HvcCBox) (sampleProtectorFactory, error) {
+	if n := hvcC.LengthSize(); n != 4 {
+		return nil, fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", n)
+	}
 	spsMap, ppsMap, err := getHEVCPSMaps(hvcC.NaluArrays)
 	if err != nil {
 		return nil, fmt.Errorf("get hevc ps maps: %w", err)

@@ -220,6 +220,13 @@ func parseMp4File(w io.Writer, r io.Reader, codec string, verbose bool) error {
 		if foundPS {
 			return nil
 		}
+		for _, trak := range parsedMp4.Moov.Traks {
+			if trak.Tkhd.TrackID == trackID {
+				if err := checkNaluLengthSize(trak.Mdia.Minf.Stbl.Stsd); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	if parsedMp4.IsFragmented() {
 		err = parseMp4Fragment(w, parsedMp4, trackID, codec, verbose)
@@ -314,6 +321,22 @@ func parseMp4Init(w io.Writer, parsedMp4 *mp4.File, verbose bool) (trackID uint3
 		}
 	}
 	return 0, codec, false, fmt.Errorf("no parsable video track found")
+}
+
+// checkNaluLengthSize fails for an avcC or hvcC with NALU length fields other
+// than the 4 bytes that GetParameterSets reads.
+func checkNaluLengthSize(stsd *mp4.StsdBox) error {
+	lengthSize := 4
+	switch {
+	case stsd.AvcX != nil && stsd.AvcX.AvcC != nil:
+		lengthSize = stsd.AvcX.AvcC.LengthSize()
+	case stsd.HvcX != nil && stsd.HvcX.HvcC != nil:
+		lengthSize = stsd.HvcX.HvcC.LengthSize()
+	}
+	if lengthSize != 4 {
+		return fmt.Errorf("%d-byte NALU lengths not supported, only 4-byte", lengthSize)
+	}
+	return nil
 }
 
 func parseMp4Fragment(w io.Writer, parsedMp4 *mp4.File, trackID uint32, codec string, verbose bool) error {

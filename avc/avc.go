@@ -67,7 +67,7 @@ func naluFits(pos, naluLength uint32, sampleLength int) bool {
 	return naluLength > 0 && uint64(pos)+uint64(naluLength) <= uint64(sampleLength)
 }
 
-// FindNaluTypes - find list of NAL unit types in sample
+// FindNaluTypes - find list of NAL unit types in sample with 4-byte NALU lengths
 func FindNaluTypes(sample []byte) []NaluType {
 	length := len(sample)
 	if length < 4 {
@@ -88,7 +88,7 @@ func FindNaluTypes(sample []byte) []NaluType {
 	return naluList
 }
 
-// FindNaluTypesUpToFirstVideoNALU - find list of NAL unit types in sample
+// FindNaluTypesUpToFirstVideoNALU - find list of NAL unit types in sample with 4-byte NALU lengths
 func FindNaluTypesUpToFirstVideoNALU(sample []byte) []NaluType {
 	length := len(sample)
 	if length < 4 {
@@ -112,12 +112,12 @@ func FindNaluTypesUpToFirstVideoNALU(sample []byte) []NaluType {
 	return naluList
 }
 
-// IsIDRSample - does sample contain IDR NALU
+// IsIDRSample - does sample with 4-byte NALU lengths contain IDR NALU
 func IsIDRSample(sample []byte) bool {
 	return ContainsNaluType(sample, NALU_IDR)
 }
 
-// ContainsNaluType - is specific NaluType present in sample
+// ContainsNaluType - is specific NaluType present in sample with 4-byte NALU lengths
 func ContainsNaluType(sample []byte, specificNalType NaluType) bool {
 	var pos uint32 = 0
 	length := len(sample)
@@ -136,7 +136,7 @@ func ContainsNaluType(sample []byte, specificNalType NaluType) bool {
 	return false
 }
 
-// HasParameterSets - Check if H.264 SPS and PPS are present
+// HasParameterSets - Check if H.264 SPS and PPS are present in sample with 4-byte NALU lengths
 func HasParameterSets(b []byte) bool {
 	naluTypeList := FindNaluTypesUpToFirstVideoNALU(b)
 	hasSPS := false
@@ -155,7 +155,7 @@ func HasParameterSets(b []byte) bool {
 	return false
 }
 
-// GetParameterSets - get (multiple) SPS and PPS from a sample
+// GetParameterSets - get (multiple) SPS and PPS from a sample with 4-byte NALU lengths
 func GetParameterSets(sample []byte) (sps [][]byte, pps [][]byte) {
 	sampleLength := uint32(len(sample))
 	var pos uint32 = 0

@@ -10,7 +10,7 @@ import (
 
 // HEVC errors
 var (
-	ErrLengthSize = errors.New("can only handle 4byte NALU length size")
+	ErrLengthSize = errors.New("NALU length size must be 1, 2, or 4 bytes")
 )
 
 // DecConfRec - HEVCDecoderConfigurationRecord
@@ -99,7 +99,7 @@ func CreateHEVCDecConfRec(vpsNalus, spsNalus, ppsNalus [][]byte,
 		ConstantFrameRate:                0,          // Set as default value
 		NumTemporalLayers:                0,          // Set as default value
 		TemporalIDNested:                 0,          // Set as default value
-		LengthSizeMinusOne:               3,          // only support 4-byte length
+		LengthSizeMinusOne:               3,          // 4-byte NALU lengths
 		NaluArrays:                       naluArrays, // VPS, SPS, PPS nalus with complete flag
 	}, nil
 }
@@ -131,7 +131,7 @@ func DecodeHEVCDecConfRec(data []byte) (DecConfRec, error) {
 	hdcr.NumTemporalLayers = (aByte >> 3) & 0x7
 	hdcr.TemporalIDNested = (aByte >> 2) & 0x1
 	hdcr.LengthSizeMinusOne = aByte & 0x3
-	if hdcr.LengthSizeMinusOne != 3 {
+	if hdcr.LengthSizeMinusOne == 2 {
 		return hdcr, ErrLengthSize
 	}
 	numArrays := sr.ReadUint8()
@@ -148,6 +148,21 @@ func DecodeHEVCDecConfRec(data []byte) (DecConfRec, error) {
 		hdcr.NaluArrays = append(hdcr.NaluArrays, array)
 	}
 	return hdcr, sr.AccError()
+}
+
+// LengthSize returns the size in bytes of the NALU length fields in the
+// samples, which is LengthSizeMinusOne + 1.
+func (h *DecConfRec) LengthSize() int {
+	return int(h.LengthSizeMinusOne) + 1
+}
+
+func (h *DecConfRec) checkLengthSize() error {
+	switch h.LengthSizeMinusOne {
+	case 0, 1, 3:
+		return nil
+	default:
+		return fmt.Errorf("%w, not %d", ErrLengthSize, h.LengthSize())
+	}
 }
 
 // Size - total size in bytes
@@ -175,6 +190,9 @@ func (h *DecConfRec) Encode(w io.Writer) error {
 
 // EncodeSW- write an HEVCDecConfRec to sw
 func (h *DecConfRec) EncodeSW(sw bits.SliceWriter) error {
+	if err := h.checkLengthSize(); err != nil {
+		return err
+	}
 	sw.WriteUint8(h.ConfigurationVersion)
 	var generalTierFlagBit byte
 	if h.GeneralTierFlag {
@@ -238,6 +256,9 @@ func DecodeLHEVCDecConfRec(data []byte) (DecConfRec, error) {
 	hdcr.NumTemporalLayers = (aByte >> 3) & 0x7
 	hdcr.TemporalIDNested = (aByte >> 2) & 0x1
 	hdcr.LengthSizeMinusOne = aByte & 0x3
+	if hdcr.LengthSizeMinusOne == 2 {
+		return hdcr, ErrLengthSize
+	}
 	numArrays := sr.ReadUint8()
 	for j := 0; j < int(numArrays); j++ {
 		array := NaluArray{
@@ -279,6 +300,9 @@ func (h *DecConfRec) EncodeLHEVC(w io.Writer) error {
 
 // EncodeLHEVCSW writes an L-HEVC (lhvC) decoder configuration record to sw.
 func (h *DecConfRec) EncodeLHEVCSW(sw bits.SliceWriter) error {
+	if err := h.checkLengthSize(); err != nil {
+		return err
+	}
 	sw.WriteUint8(h.ConfigurationVersion)
 	sw.WriteUint16(0xf000 | h.MinSpatialSegmentationIDC)
 	sw.WriteUint8(0xfc | h.ParallellismType)
